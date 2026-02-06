@@ -1,0 +1,3 @@
+[submodule "osu.Game"]
+	path = osu.Game
+	url = https://github.com/tosuapp/osu.git
