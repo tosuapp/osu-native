@@ -13,18 +13,20 @@ public class NativeObjectGenerator : IIncrementalGenerator
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         IncrementalValuesProvider<ClassDeclarationSyntax> classes = context.SyntaxProvider.CreateSyntaxProvider(
-        predicate: static (s, _) => s is ClassDeclarationSyntax,
-        transform: static (ctx, _) => (ClassDeclarationSyntax)ctx.Node);
+            predicate: static (s, _) => s is ClassDeclarationSyntax,
+            transform: static (ctx, _) => (ClassDeclarationSyntax)ctx.Node);
 
-        IncrementalValueProvider<(Compilation, ImmutableArray<ClassDeclarationSyntax>)> source = context.CompilationProvider.Combine(classes.Collect());
+        IncrementalValueProvider<(Compilation Compilation, ImmutableArray<ClassDeclarationSyntax> Classes)> source =
+            context.CompilationProvider.Combine(classes.Collect());
 
         context.RegisterSourceOutput(source, static (ctx, source) =>
         {
-            INamedTypeSymbol iOsuNativeObjectSymbol = source.Item1.GetTypeByMetadataName("osu.Native.Compiler.IOsuNativeObject`1");
-            INamedTypeSymbol osuNativeFunctionSymbol = source.Item1.GetTypeByMetadataName("osu.Native.Compiler.OsuNativeFunctionAttribute");
-            foreach (ClassDeclarationSyntax declaration in source.Item2)
+            INamedTypeSymbol iOsuNativeObjectSymbol = source.Compilation.GetTypeByMetadataName("osu.Native.Compiler.IOsuNativeObject`1");
+            INamedTypeSymbol osuNativeFunctionSymbol = source.Compilation.GetTypeByMetadataName("osu.Native.Compiler.OsuNativeFunctionAttribute");
+            INamedTypeSymbol osuNativeEnumeratorSymbol = source.Compilation.GetTypeByMetadataName("osu.Native.Compiler.OsuNativeEnumeratorAttribute`1");
+            foreach (ClassDeclarationSyntax declaration in source.Classes)
             {
-                SemanticModel model = source.Item1.GetSemanticModel(declaration.SyntaxTree);
+                SemanticModel model = source.Compilation.GetSemanticModel(declaration.SyntaxTree);
                 INamedTypeSymbol classSymbol = model.GetDeclaredSymbol(declaration);
 
                 // Make sure the class inherits IOsuNativeObject<T>.
@@ -33,25 +35,30 @@ public class NativeObjectGenerator : IIncrementalGenerator
                 if (managedObjectSymbol is null)
                     continue;
 
-                // Get all methods marked with [OsuNativeFunction].
-                List<IMethodSymbol> nativeFunctions = [];
+                string objectName = classSymbol.Name.EndsWith("Object") ? classSymbol.Name.Substring(0, classSymbol.Name.Length - 6) : classSymbol.Name;
+                List<string> members = [];
+
+                // Get all methods marked with [OsuNativeFunction] (and optionally additionally [OsuNativeEnumerator<T>]).
                 foreach (IMethodSymbol method in classSymbol.GetMembers().OfType<IMethodSymbol>())
-                    if (method.IsStatic && method.GetAttributes().Any(x => x.AttributeClass.Equals(osuNativeFunctionSymbol, SymbolEqualityComparer.Default)))
-                        nativeFunctions.Add(method);
+                    if (method.GetAttributes().Any(x => x.AttributeClass.Equals(osuNativeFunctionSymbol, SymbolEqualityComparer.Default)))
+                    {
+                        members.Add(GetNativeFunctionSource(method, objectName));
 
-                string code = GetPartialClassSource(classSymbol, [..nativeFunctions], managedObjectSymbol);
+                        AttributeData enumeratorAttribute = method.GetAttributes().FirstOrDefault(
+                            x => x.AttributeClass.OriginalDefinition.Equals(osuNativeEnumeratorSymbol, SymbolEqualityComparer.Default));
+                        if (enumeratorAttribute is not null)
+                            members.Add(GetNativeEnumeratorSource(method, objectName, enumeratorAttribute.AttributeClass.TypeArguments[0]));
+                    }
 
+                string code = GetPartialClassSource(classSymbol, objectName, [.. members], managedObjectSymbol);
                 code = CSharpSyntaxTree.ParseText(code).GetRoot().NormalizeWhitespace().ToFullString();
                 ctx.AddSource($"{classSymbol.Name}.g.cs", code);
             }
         });
     }
 
-    private static string GetPartialClassSource(INamedTypeSymbol classSymbol, IMethodSymbol[] methods, ITypeSymbol managedObjectSymbol)
+    private static string GetPartialClassSource(INamedTypeSymbol classSymbol, string objectName, string[] members, ITypeSymbol managedObjectSymbol)
     {
-        string objectName = classSymbol.Name.EndsWith("Object") ? classSymbol.Name.Substring(0, classSymbol.Name.Length - 6) : classSymbol.Name;
-        string functionsSource = string.Join("\n\n", methods.Select(x => GetNativeFunctionSource(x, objectName)));
-
         return $$"""
                using System.Runtime.InteropServices;
                using System.Runtime.CompilerServices;
@@ -61,7 +68,7 @@ public class NativeObjectGenerator : IIncrementalGenerator
                [CompilerGenerated]
                internal unsafe partial class {{classSymbol.Name}}
                {
-                   {{functionsSource}}
+                   {{string.Join("\n\n", members)}}
 
                    [CompilerGenerated]
                    [UnmanagedCallersOnly(EntryPoint = "{{objectName}}_Destroy", CallConvs = [typeof(CallConvCdecl)])]
@@ -72,7 +79,6 @@ public class NativeObjectGenerator : IIncrementalGenerator
                        try
                        {
                             ManagedObjectStore<{{managedObjectSymbol}}>.Remove(handle);
-
                             return ErrorCode.Success;
                        }
                        catch (Exception ex)
@@ -118,14 +124,11 @@ public class NativeObjectGenerator : IIncrementalGenerator
 
                    try
                    {
-                       IEnumerator<{{enumType}}> enumerator = handle.Resolve();
-
-                       if (!enumerator.MoveNext())
-                           return ErrorCode.EndOfEnumeration;
+                       IEnumerator<{{enumType}}> enumerator = enumeratorHandle.Resolve();
 
                        *obj = enumerator.Current;
 
-                       return ErrorCode.Success;
+                       return enumerator.MoveNext() ? ErrorCode.Success : ErrorCode.EndOfEnumeration;
                    }
                    catch (Exception ex)
                    {
@@ -141,7 +144,7 @@ public class NativeObjectGenerator : IIncrementalGenerator
 
                    try
                    {
-                       ManagedObjectStore<IEnumerator<{{enumType}}>>.Remove(handle);
+                       ManagedObjectStore<IEnumerator<{{enumType}}>>.Remove(enumeratorHandle);
                        return ErrorCode.Success;
                    }
                    catch (Exception ex)

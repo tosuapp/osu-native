@@ -5,10 +5,10 @@ namespace Test;
 
 public class OsuDifficultyBenchmark
 {
-    private int _rulesetHandle;
-    private int _calculatorHandle;
+    private uint _rulesetHandle;
+    private uint _calculatorHandle;
     private NativeBeatmap _beatmap;
-    private int _modsHandle;
+    private uint _modsHandle;
     private NativeOsuDifficultyAttributes _attributes;
 
     [GlobalSetup]
@@ -17,16 +17,16 @@ public class OsuDifficultyBenchmark
         Native.Beatmap_CreateFromFile(@"C:\Users\mini\Desktop\w.osu", out _beatmap);
         Native.Ruleset_CreateFromId(0, out var ruleset);
         _rulesetHandle = ruleset.Handle;
-        Native.OsuDifficultyCalculator_Create(ruleset.Handle, _beatmap.Handle, out int diffCalcHandle);
+        Native.OsuDifficultyCalculator_Create(ruleset.Handle, _beatmap.Handle, out uint diffCalcHandle);
         Native.OsuPerformanceCalculator_Create(out _calculatorHandle);
-        Native.OsuDifficultyCalculator_Calculate(diffCalcHandle, out _attributes);
+        Native.OsuDifficultyCalculator_Calculate(diffCalcHandle, 0, out _attributes);
         Native.ModsCollection_Create(out _modsHandle);
     }
 
     [Benchmark]
     public void CalculateDifficulty()
     {
-       _ =  Native.OsuPerformanceCalculator_Calculate(_calculatorHandle, new()
+        _ = Native.OsuPerformanceCalculator_Calculate(_calculatorHandle, new()
         {
             BeatmapHandle = _beatmap.Handle,
             ModsHandle = _modsHandle,
